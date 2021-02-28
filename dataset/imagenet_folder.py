@@ -7,7 +7,6 @@ import torchvision.transforms as transforms
 from torch.utils.data import Subset
 from torchvision.datasets.folder import default_loader
 
-from ..dataset import Dataset
 
 __all__ = ['ImageNetFolder']
 
