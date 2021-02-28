@@ -121,14 +121,15 @@ def create_lamb_optimizer(model, lr, betas=(0.9, 0.999), eps=1e-6,
     # [] will not exclude any layers
     if 'bias' in exclude_layers:
         params = [
-            dict(get_common_parameters(
+            dict(params=get_common_parameters(
                 model, exclude_func=get_norm_bias_parameters)),
-            dict(get_norm_bias_parameters(model), weight_decay=0)
+            dict(params=get_norm_bias_parameters(model), weight_decay=0)
         ]
     elif len(exclude_layers) > 0:
         params = [
-            dict(get_common_parameters(model, exclude_func=get_norm_parameters)),
-            dict(get_norm_parameters(model), weight_decay=0)
+            dict(params=get_common_parameters(
+                model, exclude_func=get_norm_parameters)),
+            dict(params=get_norm_parameters(model), weight_decay=0)
         ]
     else:
         params = model.parameters()

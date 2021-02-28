@@ -290,7 +290,8 @@ def train(model, loader, device, epoch, sampler, criterion, optimizer,
 def evaluate(model, loader, device, meters, split='test', quiet=True):
     _meters = {}
     for k, meter in meters.items():
-        _meters[k.format(split)] = meter()
+        meter.reset()
+        _meters[k.format(split)] = meter
     meters = _meters
 
     model.eval()
