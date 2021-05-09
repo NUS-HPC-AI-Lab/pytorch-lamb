@@ -27,7 +27,7 @@ class LAMB(Optimizer):
     """
 
     def __init__(self, params, lr=1e-3, betas=(0.9, 0.999), eps=1e-6,
-                 weight_decay=0):
+                 weight_decay=0, bias_correction=False):
         if not 0.0 <= lr:
             raise ValueError("Invalid learning rate: {}".format(lr))
         if not 0.0 <= eps:
@@ -39,7 +39,7 @@ class LAMB(Optimizer):
             raise ValueError(
                 "Invalid beta parameter at index 1: {}".format(betas[1]))
         defaults = dict(lr=lr, betas=betas, eps=eps,
-                        weight_decay=weight_decay)
+                        weight_decay=weight_decay, bias_correction=bias_correction)
         super().__init__(params, defaults)
 
     @torch.no_grad()
@@ -96,6 +96,11 @@ class LAMB(Optimizer):
                 # Apply bias to lr to avoid broadcast.
                 # * math.sqrt(bias_correction2) / bias_correction1
                 scaled_lr = group['lr']
+                if group['bias_correction']:
+                    bias_correction1 = 1 - beta1 ** state['step']
+                    bias_correction2 = 1 - beta2 ** state['step']
+                    exp_avg.div_(bias_correction1)
+                    exp_avg_sq.div_(bias_correction2)
                 update = exp_avg / exp_avg_sq.sqrt().add(group['eps'])
                 if group['weight_decay'] != 0:
                     update.add_(p.data, alpha=group['weight_decay'])
@@ -114,7 +119,7 @@ class LAMB(Optimizer):
 
 
 def create_lamb_optimizer(model, lr, betas=(0.9, 0.999), eps=1e-6,
-                          weight_decay=0, exclude_layers=['bn', 'ln', 'bias']):
+                          weight_decay=0, exclude_layers=['bn', 'ln', 'bias'], bias_correction=False):
     # can only exclude BatchNorm, LayerNorm, bias layers
     # ['bn', 'ln'] will exclude BatchNorm, LayerNorm layers
     # ['bn', 'ln', 'bias'] will exclude BatchNorm, LayerNorm, bias layers
@@ -134,5 +139,5 @@ def create_lamb_optimizer(model, lr, betas=(0.9, 0.999), eps=1e-6,
     else:
         params = model.parameters()
     optimizer = LAMB(params, lr, betas=betas, eps=eps,
-                     weight_decay=weight_decay)
+                     weight_decay=weight_decay, bias_correction=bias_correction)
     return optimizer
