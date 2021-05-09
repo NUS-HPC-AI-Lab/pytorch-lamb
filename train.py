@@ -14,7 +14,7 @@ import torch.multiprocessing as mp
 from torchvision import models
 from tqdm import tqdm
 
-from dataset import ImageNetFolder, make_meters
+from dataset import ImageNetFolder, make_meters, DaliImageNet
 from optim.lamb import create_lamb_optimizer
 from optim import lr_scheduler
 
@@ -32,11 +32,16 @@ def main():
     parser.add_argument('--batch_size', type=int, default=128)
     parser.add_argument('--dataset_path', default='data')
     parser.add_argument('--num_workers', type=int, default=8)
+    parser.add_argument('--num_threads', type=int, default=8)
     parser.add_argument('--base_lr', type=float, default=0.0025)
     parser.add_argument('--lr_scaling', default='sqrt')
     parser.add_argument('--weight_decay', type=float, default=1.5)
     parser.add_argument('--warmup_epochs', type=float, default=0.625)
+    parser.add_argument('--bias_correction',
+                        default=False, action='store_true')
     parser.add_argument('--save_checkpoint',
+                        default=False, action='store_true')
+    parser.add_argument('--dali',
                         default=False, action='store_true')
     args = parser.parse_args()
 
@@ -84,34 +89,45 @@ def main():
     #####################################################################
 
     printr(f'\n==> creating dataset from "{args.dataset_path}"')
-    dataset = ImageNetFolder(args.dataset_path)
-    # Horovod: limit # of CPU threads to be used per worker.
-    torch.set_num_threads(args.num_workers)
-    loader_kwargs = {'num_workers': args.num_workers,
-                     'pin_memory': True} if args.device == 'cuda' else {}
-    # When supported, use 'forkserver' to spawn dataloader workers
-    # instead of 'fork' to prevent issues with Infiniband implementations
-    # that are not fork-safe
-    if (loader_kwargs.get('num_workers', 0) > 0 and
-            hasattr(mp, '_supports_context') and
-            mp._supports_context and
-            'forkserver' in mp.get_all_start_methods()):
-        loader_kwargs['multiprocessing_context'] = 'forkserver'
-    printr(f'\n==> loading dataset "{loader_kwargs}""')
-    samplers, loaders = {}, {}
-    for split in dataset:
-        # Horovod: use DistributedSampler to partition data among workers.
-        # Manually specify `num_replicas=hvd.size()` and `rank=hvd.rank()`.
-        samplers[split] = torch.utils.data.distributed.DistributedSampler(
-            dataset[split], num_replicas=hvd.size(), rank=hvd.rank())
-        loaders[split] = torch.utils.data.DataLoader(
-            dataset[split], batch_size=args.batch_size * (
-                num_batches_per_step if split == 'train' else 1),
-            sampler=samplers[split],
-            drop_last=(num_batches_per_step > 1
-                       and split == 'train'),
-            **loader_kwargs
-        )
+    if args.dali:
+        dataset = DaliImageNet(args.dataset_path,
+                               batch_size=args.batch_size,
+                               train_batch_size=args.batch_size * num_batches_per_step,
+                               shard_id=hvd.rank(),
+                               num_shards=hvd.size(),
+                               num_workers=args.num_workers)
+    else:
+        dataset = ImageNetFolder(args.dataset_path)
+        # Horovod: limit # of CPU threads to be used per worker.
+        loader_kwargs = {'num_workers': args.num_workers,
+                         'pin_memory': True} if args.device == 'cuda' else {}
+        # When supported, use 'forkserver' to spawn dataloader workers
+        # instead of 'fork' to prevent issues with Infiniband implementations
+        # that are not fork-safe
+        if (loader_kwargs.get('num_workers', 0) > 0 and
+                hasattr(mp, '_supports_context') and
+                mp._supports_context and
+                'forkserver' in mp.get_all_start_methods()):
+            loader_kwargs['multiprocessing_context'] = 'forkserver'
+        printr(f'\n==> loading dataset "{loader_kwargs}""')
+    torch.set_num_threads(args.num_threads)
+    if args.dali:
+        samplers, loaders = {split: None for split in dataset}, dataset
+    else:
+        samplers, loaders = {}, {}
+        for split in dataset:
+            # Horovod: use DistributedSampler to partition data among workers.
+            # Manually specify `num_replicas=hvd.size()` and `rank=hvd.rank()`.
+            samplers[split] = torch.utils.data.distributed.DistributedSampler(
+                dataset[split], num_replicas=hvd.size(), rank=hvd.rank())
+            loaders[split] = torch.utils.data.DataLoader(
+                dataset[split], batch_size=args.batch_size * (
+                    num_batches_per_step if split == 'train' else 1),
+                sampler=samplers[split],
+                drop_last=(num_batches_per_step > 1
+                           and split == 'train'),
+                **loader_kwargs
+            )
 
     printr(f'\n==> creating model "resnet50"')
     model = models.resnet50(zero_init_residual=True)
@@ -127,7 +143,7 @@ def main():
     printr(f'\n==> creating optimizer LAMB with LR = {lr}')
 
     optimizer = create_lamb_optimizer(
-        model, lr, weight_decay=args.weight_decay)
+        model, lr, weight_decay=args.weight_decay, bias_correction=args.bias_correction)
 
     # Horovod: wrap optimizer with DistributedOptimizer.
     optimizer = hvd.DistributedOptimizer(
@@ -176,7 +192,7 @@ def main():
 
     training_meters = make_meters()
     meters = evaluate(model, device=args.device, meters=training_meters,
-                      loader=loaders['test'], split='test')
+                      loader=loaders['test'], split='test', dali=args.dali)
     for k, meter in meters.items():
         printr(f'[{k}] = {meter:.2f}')
     if args.evaluate or last_epoch >= args.num_epochs:
@@ -202,7 +218,7 @@ def main():
               num_steps_per_epoch=num_steps_per_epoch,
               warmup_lr_epochs=warmup_lr_epochs,
               schedule_lr_per_epoch=False,
-              writer=writer, quiet=hvd.rank() != 0)
+              writer=writer, quiet=hvd.rank() != 0, dali=args.dali)
 
         meters = dict()
         for split, loader in loaders.items():
@@ -210,7 +226,7 @@ def main():
                 meters.update(evaluate(model, loader=loader,
                                        device=args.device,
                                        meters=training_meters,
-                                       split=split, quiet=hvd.rank() != 0))
+                                       split=split, quiet=hvd.rank() != 0, dali=args.dali))
 
         best = False
         if best_metric is None or best_metric < meters[METRIC]:
@@ -248,18 +264,22 @@ def main():
 
 
 def train(model, loader, device, epoch, sampler, criterion, optimizer,
-          scheduler, batch_size, num_batches_per_step, num_steps_per_epoch, warmup_lr_epochs, schedule_lr_per_epoch, writer=None, quiet=True):
+          scheduler, batch_size, num_batches_per_step, num_steps_per_epoch, warmup_lr_epochs, schedule_lr_per_epoch, writer=None, quiet=True, dali=False):
     step_size = num_batches_per_step * batch_size
     num_inputs = epoch * num_steps_per_epoch * step_size * hvd.size()
     _r_num_batches_per_step = 1.0 / num_batches_per_step
 
-    sampler.set_epoch(epoch)
+    if sampler:
+        sampler.set_epoch(epoch)
     model.train()
-    for step, (inputs, targets) in enumerate(tqdm(
+    for step, data in enumerate(tqdm(
             loader, desc='train', ncols=0, disable=quiet)):
-
-        inputs = inputs.to(device, non_blocking=True)
-        targets = targets.to(device, non_blocking=True)
+        if dali:
+            inputs, targets = data[0]['data'], data[0]['label']
+        else:
+            inputs, targets = data
+            inputs = inputs.to(device, non_blocking=True)
+            targets = targets.to(device, non_blocking=True)
         optimizer.zero_grad()
 
         loss = torch.tensor([0.0])
@@ -282,12 +302,10 @@ def train(model, loader, device, epoch, sampler, criterion, optimizer,
             writer.add_scalar('lr/train', lr, num_inputs)
 
         adjust_learning_rate(scheduler, epoch=epoch, step=step,
-                             num_steps_per_epoch=num_steps_per_epoch,
-                             warmup_lr_epochs=warmup_lr_epochs,
                              schedule_lr_per_epoch=schedule_lr_per_epoch)
 
 
-def evaluate(model, loader, device, meters, split='test', quiet=True):
+def evaluate(model, loader, device, meters, split='test', quiet=True, dali=False):
     _meters = {}
     for k, meter in meters.items():
         meter.reset()
@@ -297,9 +315,13 @@ def evaluate(model, loader, device, meters, split='test', quiet=True):
     model.eval()
 
     with torch.no_grad():
-        for inputs, targets in tqdm(loader, desc=split, ncols=0, disable=quiet):
-            inputs = inputs.to(device, non_blocking=True)
-            targets = targets.to(device, non_blocking=True)
+        for data in tqdm(loader, desc=split, ncols=0, disable=quiet):
+            if dali:
+                inputs, targets = data[0]['data'], data[0]['label']
+            else:
+                inputs, targets = data
+                inputs = inputs.to(device, non_blocking=True)
+                targets = targets.to(device, non_blocking=True)
 
             outputs = model(inputs)
             for meter in meters.values():
@@ -315,8 +337,8 @@ def evaluate(model, loader, device, meters, split='test', quiet=True):
     return meters
 
 
-def adjust_learning_rate(scheduler, epoch, step, num_steps_per_epoch,
-                         warmup_lr_epochs=0, schedule_lr_per_epoch=False):
+def adjust_learning_rate(scheduler, epoch, step,
+                         schedule_lr_per_epoch=False):
     if schedule_lr_per_epoch and (step > 0 or epoch == 0):
         return
     else:
