@@ -4,6 +4,7 @@ import os
 import random
 import shutil
 from datetime import datetime
+from config import configs
 
 import numpy as np
 import horovod.torch as hvd
@@ -26,28 +27,33 @@ def main():
     parser.add_argument('--device', default='cuda')
     parser.add_argument('--evaluate', action='store_true')
     parser.add_argument('--suffix', default='')
-    parser.add_argument('--seed', type=int, default=42)
-    parser.add_argument('--num_epochs', type=int, default=90)
-    parser.add_argument('--total_batch_size', type=int, default=1024)
-    parser.add_argument('--batch_size', type=int, default=128)
-    parser.add_argument('--dataset_path', default='data')
-    parser.add_argument('--num_workers', type=int, default=8)
-    parser.add_argument('--num_threads', type=int, default=8)
-    parser.add_argument('--base_lr', type=float, default=0.0025)
-    parser.add_argument('--lr_scaling', default='sqrt')
-    parser.add_argument('--weight_decay', type=float, default=1.5)
-    parser.add_argument('--warmup_epochs', type=float, default=0.625)
+    parser.add_argument('--seed', type=int)
+    parser.add_argument('--num_epochs', type=int)
+    parser.add_argument('--total_batch_size', type=int)
+    parser.add_argument('--batch_size', type=int)
+    parser.add_argument('--dataset_path')
+    parser.add_argument('--num_workers', type=int)
+    parser.add_argument('--num_threads', type=int)
+    parser.add_argument('--base_lr', type=float)
+    parser.add_argument('--lr_scaling')
+    parser.add_argument('--weight_decay', type=float)
+    parser.add_argument('--warmup_epochs', type=float)
     parser.add_argument('--bias_correction',
-                        default=False, action='store_true')
+                        default=None, action='store_true')
     parser.add_argument('--save_checkpoint',
-                        default=False, action='store_true')
+                        default=None, action='store_true')
     parser.add_argument('--dali',
-                        default=False, action='store_true')
+                        default=None, action='store_true')
     args = parser.parse_args()
 
     ##################
     # Update configs #
     ##################
+    for k, v in configs.items():
+        if getattr(args, k) is None:
+            setattr(args, k, v)
+    for k, v in vars(args).items():
+        printr(f'[{k}] = {v}')
 
     if args.device is not None and args.device != 'cpu':
         # Horovod: pin GPU to local rank.
