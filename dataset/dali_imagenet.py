@@ -1,5 +1,5 @@
 from nvidia.dali.pipeline import Pipeline
-from nvidia.dali.plugin.pytorch import DALIClassificationIterator as PyTorchIterator
+from nvidia.dali.plugin.pytorch import DALIClassificationIterator, LastBatchPolicy
 import nvidia.dali.fn as fn
 import nvidia.dali.types as types
 import nvidia.dali.tfrecord as tfrec
@@ -24,6 +24,7 @@ def dali_dataloader(
             num_shards=num_shards,
             initial_fill=10000,
             read_ahead=True,
+            pad_last_batch=True,
             prefetch_queue_depth=num_workers,
             name='Reader',
             features={
@@ -69,8 +70,9 @@ def dali_dataloader(
         pipe.set_outputs(images, label)
 
     pipe.build()
-    loader = PyTorchIterator(
-        pipe, reader_name="Reader", auto_reset=True, last_batch_policy='DROP')
+    last_batch_policy = LastBatchPolicy.DROP if training else LastBatchPolicy.PARTIAL
+    loader = DALIClassificationIterator(
+        pipe, reader_name="Reader", auto_reset=True, last_batch_policy=last_batch_policy)
     return loader
 
 
