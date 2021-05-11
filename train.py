@@ -18,6 +18,7 @@ from tqdm import tqdm
 from dataset import ImageNetFolder, make_meters, DaliImageNet
 from optim.lamb import create_lamb_optimizer
 from optim import lr_scheduler
+from loss import LabelSmoothLoss
 
 METRIC = 'acc/test_top1'
 
@@ -136,10 +137,10 @@ def main():
             )
 
     printr(f'\n==> creating model "resnet50"')
-    model = models.resnet50(zero_init_residual=True)
+    model = models.resnet50()
     model = model.to(args.device)
 
-    criterion = nn.CrossEntropyLoss().to(args.device)
+    criterion = LabelSmoothLoss(smoothing=0.1).to(args.device)
     # Horovod: scale learning rate by the number of GPUs.
     lr = args.base_lr
     if args.lr_scaling == 'sqrt':
