@@ -19,6 +19,7 @@ You can also simply use LAMB in your own projects, just use optim.lamb.create_la
 
 | batch size | LR              | warmup epochs | top1 acc                 | top5 acc |
 | ---------- | --------------- | ------------- | ------------------------ | -------- |
+| 4K         | 4/(2^1.5 * 100) | 2.5           | 77.14                    | 93.50    |
 | 8K         | 0.02            | 5             | 77.31                    | 93.64    |
 | 16K        | 4/(2^0.5 * 100) | 10            | 76.91                    | 93.30    |
 | 32K        | 0.04            | 20            | 76.71                    | 93.00    |
